@@ -1,0 +1,58 @@
+name: OpenSpec validate + Python checks
+
+on:
+  pull_request:
+    paths:
+      - 'openspec/**'
+  push:
+    branches: [ main ]
+    paths:
+      - 'openspec/**'
+      - 'src/**'
+      - 'app/**'
+
+jobs:
+  openspec-validate:
+    name: OpenSpec validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install OpenSpec CLI
+        run: npm install -g @fission-ai/openspec@latest
+      - name: Validate OpenSpec changes
+        run: |
+          set -e
+          # Validate every top-level change directory under openspec/changes (skip archive)
+          if [ -d openspec/changes ]; then
+            for c in $(ls -1 openspec/changes | grep -v '^archive$' || true); do
+              if [ -n "$c" ]; then
+                echo "Validating $c"
+                openspec validate "$c" --strict || exit 1
+              fi
+            done
+          else
+            echo "No openspec/changes directory present, skipping"
+          fi
+
+  python-check:
+    name: Python syntax & quick smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+      - name: Byte-compile Python files
+        run: |
+          python -m py_compile src/ml/train_baseline.py app/streamlit_app.py || exit 1
