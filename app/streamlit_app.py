@@ -261,8 +261,21 @@ def main():
                 # probability histogram
                 if y_prob_test is not None:
                     st.markdown('Probability distribution (spam probability)')
-                    prob_df = pd.DataFrame({'prob_spam': y_prob_test})
-                    st.bar_chart(pd.cut(y_prob_test, bins=10).value_counts().sort_index())
+                    # bin the probabilities and produce a counts DataFrame
+                    binned = pd.cut(y_prob_test, bins=10)
+                    counts = binned.value_counts().sort_index()
+                    # Convert IntervalIndex to string labels for Altair/Streamlit compatibility
+                    counts_df = counts.reset_index()
+                    counts_df.columns = ['bin', 'count']
+                    counts_df['bin_label'] = counts_df['bin'].astype(str)
+                    try:
+                        st.bar_chart(counts_df.set_index('bin_label')['count'])
+                    except Exception:
+                        # Fallback: use numeric bin centers if charting by string fails
+                        edges = np.array([iv.left for iv in counts.index.tolist()] + [counts.index[-1].right])
+                        centers = 0.5 * (edges[:-1] + edges[1:])
+                        hist_df = pd.DataFrame({'bin_center': centers, 'count': counts.values})
+                        st.bar_chart(hist_df.set_index('bin_center')['count'])
 
                 # Calibration plot
                 if y_prob_test is not None:
