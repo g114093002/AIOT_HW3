@@ -19,8 +19,18 @@ from typing import Optional, Tuple, List
 
 import joblib
 import pandas as pd
+import numpy as np
 import streamlit as st
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import (
+    confusion_matrix,
+    precision_score,
+    recall_score,
+    f1_score,
+    precision_recall_curve,
+    roc_curve,
+    auc,
+)
+from sklearn.calibration import calibration_curve
 
 
 MODEL_PATH = Path('out/model.joblib')
@@ -35,8 +45,6 @@ def load_model(path: Path):
     if not path.exists():
         return None
     return joblib.load(path)
-
-
 @st.cache_data(show_spinner=False)
 def load_metrics(path: Path):
     if not path.exists():
@@ -63,10 +71,6 @@ def load_dataset(url: str, nrows: Optional[int] = None) -> pd.DataFrame:
 
 
 def predict_text(bundle, text: str) -> Tuple[str, Optional[float], int, Optional[float]]:
-    """Return (label, prob_spam, raw_pred_int, decision_score).
-
-    decision_score is the classifier decision_function value when available.
-    """
     vec = bundle['vectorizer']
     clf = bundle['classifier']
     X = vec.transform([text])
@@ -78,10 +82,6 @@ def predict_text(bundle, text: str) -> Tuple[str, Optional[float], int, Optional
 
 
 def top_features(bundle, k: int = 20) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
-    """Return top-k features for spam (positive) and ham (negative).
-
-    Requires a linear classifier with `coef_` and a vectorizer with `get_feature_names_out()`.
-    """
     vec = bundle['vectorizer']
     clf = bundle['classifier']
     try:
@@ -103,12 +103,8 @@ def bulk_classify(bundle, texts: List[str]) -> pd.DataFrame:
     preds = clf.predict(X)
     probs = clf.predict_proba(X)[:, 1] if hasattr(clf, 'predict_proba') else [None] * len(texts)
     df = pd.DataFrame({'text': texts, 'prediction': preds, 'prob_spam': probs})
-    # keep legacy prediction and provide threshold-based label later
     df['label'] = df['prediction'].apply(lambda v: 'spam' if int(v) == 1 else 'ham')
     return df
-
-
-def main():
     st.set_page_config(page_title='Spam classifier demo', layout='wide')
     st.title('Spam classifier demo')
     st.markdown(
@@ -178,18 +174,131 @@ def main():
                 if metrics.get('roc_auc') is not None:
                     st.write(f"ROC AUC: {metrics.get('roc_auc'):.3f}")
 
-            # Top features
-            if st.checkbox('Show top indicative features'):
-                top_spam, top_ham = top_features(bundle, k=20)
+            # Top features (tokens) by class — always shown
+            try:
+                top_spam, top_ham = top_features(bundle, k=30)
+                spam_df = pd.DataFrame(top_spam, columns=['token', 'weight']).head(30)
+                ham_df = pd.DataFrame(top_ham, columns=['token', 'weight']).head(30)
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.markdown('**Top spam features**')
-                    for f, w in top_spam[:20]:
-                        st.write(f'{f} — {w:.3f}')
+                    st.markdown('**Top spam tokens**')
+                    st.dataframe(spam_df)
+                    try:
+                        st.bar_chart(spam_df.set_index('token')['weight'])
+                    except Exception:
+                        pass
                 with c2:
-                    st.markdown('**Top ham features**')
-                    for f, w in top_ham[:20]:
-                        st.write(f'{f} — {w:.3f}')
+                    st.markdown('**Top ham tokens**')
+                    st.dataframe(ham_df)
+                    try:
+                        st.bar_chart(ham_df.set_index('token')['weight'])
+                    except Exception:
+                        pass
+            except Exception:
+                st.write('Top token extraction failed')
+
+            # Model evaluation: compute metrics on a held-out sample and show plots
+            try:
+                st.markdown('---')
+                st.subheader('Model evaluation (sample)')
+                # load a sample of the dataset to compute evaluation
+                df_eval = load_dataset(DEFAULT_DATA_URL, nrows=3000)
+                X_all = df_eval['text'].values
+                y_all = df_eval['label'].apply(lambda s: 1 if s in ('spam', '1', 'true', 't', 'yes') else 0).values
+                from sklearn.model_selection import train_test_split
+
+                X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(
+                    X_all, y_all, test_size=0.2, random_state=42, stratify=y_all if len(set(y_all)) > 1 else None
+                )
+                vec = bundle['vectorizer']
+                clf = bundle['classifier']
+                X_test_tfidf = vec.transform(X_test_s)
+
+                if hasattr(clf, 'predict_proba'):
+                    y_prob_test = clf.predict_proba(X_test_tfidf)[:, 1]
+                else:
+                    y_prob_test = None
+
+                # default predictions using current threshold
+                if y_prob_test is not None:
+                    y_pred_test = (y_prob_test >= threshold).astype(int)
+                else:
+                    y_pred_test = clf.predict(X_test_tfidf)
+
+                # show numeric metrics
+                acc = np.mean(y_pred_test == y_test_s)
+                prec = precision_score(y_test_s, y_pred_test, zero_division=0)
+                rec = recall_score(y_test_s, y_pred_test, zero_division=0)
+                f1 = f1_score(y_test_s, y_pred_test, zero_division=0)
+                mcols = st.columns(4)
+                mcols[0].metric('Accuracy', f"{acc:.3f}")
+                mcols[1].metric('Precision', f"{prec:.3f}")
+                mcols[2].metric('Recall', f"{rec:.3f}")
+                mcols[3].metric('F1', f"{f1:.3f}")
+
+                # confusion matrix
+                cm = confusion_matrix(y_test_s, y_pred_test)
+                st.markdown('Confusion matrix (test sample)')
+                cm_df = pd.DataFrame(cm, index=['actual_ham', 'actual_spam'], columns=['pred_ham', 'pred_spam'])
+                st.dataframe(cm_df)
+
+                # ROC curve
+                if y_prob_test is not None:
+                    fpr, tpr, _ = roc_curve(y_test_s, y_prob_test)
+                    roc_auc = auc(fpr, tpr)
+                    st.markdown(f'ROC AUC: {roc_auc:.3f}')
+                    roc_df = pd.DataFrame({'fpr': fpr, 'tpr': tpr}).set_index('fpr')
+                    st.line_chart(roc_df)
+
+                # Precision-Recall curve
+                if y_prob_test is not None:
+                    precision_curve_vals, recall_curve_vals, _ = precision_recall_curve(y_test_s, y_prob_test)
+                    pr_df = pd.DataFrame({'precision': precision_curve_vals, 'recall': recall_curve_vals})
+                    st.markdown('Precision-Recall curve')
+                    st.line_chart(pr_df)
+
+                # probability histogram
+                if y_prob_test is not None:
+                    st.markdown('Probability distribution (spam probability)')
+                    prob_df = pd.DataFrame({'prob_spam': y_prob_test})
+                    st.bar_chart(pd.cut(y_prob_test, bins=10).value_counts().sort_index())
+
+                # Calibration plot
+                if y_prob_test is not None:
+                    try:
+                        prob_true, prob_pred = calibration_curve(y_test_s, y_prob_test, n_bins=10)
+                        calib_df = pd.DataFrame({'prob_pred': prob_pred, 'prob_true': prob_true}).set_index('prob_pred')
+                        st.markdown('Calibration curve (sample)')
+                        st.line_chart(calib_df)
+                    except Exception:
+                        pass
+
+                # Threshold sweep: precision/recall/f1
+                if y_prob_test is not None:
+                    thresholds = np.linspace(0.0, 1.0, 101)
+                    pr_vals, rc_vals, f1_vals = [], [], []
+                    for t in thresholds:
+                        y_pred_t = (y_prob_test >= t).astype(int)
+                        pr_vals.append(precision_score(y_test_s, y_pred_t, zero_division=0))
+                        rc_vals.append(recall_score(y_test_s, y_pred_t, zero_division=0))
+                        f1_vals.append(f1_score(y_test_s, y_pred_t, zero_division=0))
+                    sweep_df = pd.DataFrame({'threshold': thresholds, 'precision': pr_vals, 'recall': rc_vals, 'f1': f1_vals}).set_index('threshold')
+                    st.markdown('Threshold sweep (precision / recall / f1)')
+                    st.line_chart(sweep_df)
+
+                # Precision@k (top-k by prob)
+                if y_prob_test is not None:
+                    k_list = [10, 20, 50, 100]
+                    pk = {}
+                    sorted_idx = np.argsort(-y_prob_test)
+                    for k in k_list:
+                        topk = sorted_idx[:k]
+                        pk[k] = float(np.mean(y_test_s[topk]))
+                    pk_df = pd.DataFrame.from_dict(pk, orient='index', columns=['precision_at_k'])
+                    st.markdown('Precision@k (test sample)')
+                    st.table(pk_df)
+            except Exception as e:
+                st.write('Model evaluation failed:', e)
 
     with left:
         st.header('Try a single message')
