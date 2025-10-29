@@ -62,14 +62,19 @@ def load_dataset(url: str, nrows: Optional[int] = None) -> pd.DataFrame:
     return df
 
 
-def predict_text(bundle, text: str) -> Tuple[str, Optional[float]]:
+def predict_text(bundle, text: str) -> Tuple[str, Optional[float], int, Optional[float]]:
+    """Return (label, prob_spam, raw_pred_int, decision_score).
+
+    decision_score is the classifier decision_function value when available.
+    """
     vec = bundle['vectorizer']
     clf = bundle['classifier']
     X = vec.transform([text])
     prob = clf.predict_proba(X)[0, 1] if hasattr(clf, 'predict_proba') else None
-    pred = clf.predict(X)[0]
-    label = 'spam' if int(pred) == 1 else 'ham'
-    return label, prob
+    pred = int(clf.predict(X)[0])
+    score = clf.decision_function(X)[0] if hasattr(clf, 'decision_function') else None
+    label = 'spam' if pred == 1 else 'ham'
+    return label, prob, pred, score
 
 
 def top_features(bundle, k: int = 20) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
@@ -98,6 +103,7 @@ def bulk_classify(bundle, texts: List[str]) -> pd.DataFrame:
     preds = clf.predict(X)
     probs = clf.predict_proba(X)[:, 1] if hasattr(clf, 'predict_proba') else [None] * len(texts)
     df = pd.DataFrame({'text': texts, 'prediction': preds, 'prob_spam': probs})
+    # keep legacy prediction and provide threshold-based label later
     df['label'] = df['prediction'].apply(lambda v: 'spam' if int(v) == 1 else 'ham')
     return df
 
@@ -163,25 +169,43 @@ def main():
         if ex and ex != '(none)':
             sample = ex
             st.text_area('Message (example chosen)', value=sample, height=120)
+        # Threshold slider: lets user adjust the probability cutoff used to label spam
+        threshold = st.slider('Classification threshold (probability for spam)', 0.0, 1.0, 0.5, step=0.01)
+        st.caption('Messages with probability >= threshold will be labeled as SPAM. Adjust to trade off precision vs recall.')
+
         if st.button('Predict'):
             if bundle is None:
                 st.error('Model not available')
             else:
-                label, prob = predict_text(bundle, sample)
+                label, prob, raw_pred, score = predict_text(bundle, sample)
+                # apply threshold when probability is available; otherwise fall back to raw_pred
+                if prob is not None:
+                    applied_label = 'spam' if prob >= threshold else 'ham'
+                else:
+                    applied_label = 'spam' if int(raw_pred) == 1 else 'ham'
+
                 st.markdown('### Prediction')
                 pred_col1, pred_col2 = st.columns([1, 3])
                 with pred_col1:
-                    if label == 'spam':
+                    if applied_label == 'spam':
                         st.metric('Label', 'SPAM', delta=None)
                     else:
                         st.metric('Label', 'HAM', delta=None)
                 with pred_col2:
                     if prob is not None:
-                        st.write(f'Probability spam: **{prob:.3f}**')
+                        st.write(f'Probability spam: **{prob:.3f}** (threshold = {threshold:.2f})')
                         # progress-like bar
                         st.progress(int(prob * 100))
                     else:
-                        st.write('Probability not available')
+                        st.write('Probability not available; using raw prediction')
+
+                # Show raw numeric outputs to aid debugging
+                with st.expander('Raw model outputs'):
+                    st.write({'raw_pred_class': int(raw_pred)})
+                    if score is not None:
+                        st.write({'decision_score': float(score)})
+                    else:
+                        st.write('decision_score: not available')
 
                 # If we have probabilities and metrics, show ROC curve preview
                 try:
@@ -226,6 +250,12 @@ def main():
                     # take the last column as text
                     texts = df.iloc[:, -1].astype(str).tolist()
                 res = bulk_classify(bundle, texts)
+                # apply threshold-based labeling if probabilities are available
+                if 'prob_spam' in res.columns:
+                    res['pred_threshold'] = res['prob_spam'].apply(lambda p: 'spam' if (p is not None and p >= threshold) else 'ham')
+                else:
+                    res['pred_threshold'] = res['prediction'].apply(lambda v: 'spam' if int(v) == 1 else 'ham')
+
                 st.write(res.head(200))
                 csv = res.to_csv(index=False).encode('utf-8')
                 st.download_button('Download results CSV', data=csv, file_name='predictions.csv')
@@ -250,7 +280,12 @@ def main():
                     vec = bundle['vectorizer']
                     clf = bundle['classifier']
                     X_test_tfidf = vec.transform(X_test)
-                    y_pred = clf.predict(X_test_tfidf)
+                    # Use probability + threshold for prediction display when available
+                    if hasattr(clf, 'predict_proba'):
+                        y_prob_test = clf.predict_proba(X_test_tfidf)[:, 1]
+                        y_pred = (y_prob_test >= threshold).astype(int)
+                    else:
+                        y_pred = clf.predict(X_test_tfidf)
                     cm = confusion_matrix(y_test, y_pred)
                     st.write('Confusion matrix (test split):')
                     cm_df = pd.DataFrame(cm, index=['actual_ham', 'actual_spam'], columns=['pred_ham', 'pred_spam'])
