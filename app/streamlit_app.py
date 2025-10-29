@@ -105,6 +105,7 @@ def bulk_classify(bundle, texts: List[str]) -> pd.DataFrame:
     df = pd.DataFrame({'text': texts, 'prediction': preds, 'prob_spam': probs})
     df['label'] = df['prediction'].apply(lambda v: 'spam' if int(v) == 1 else 'ham')
     return df
+def main():
     st.set_page_config(page_title='Spam classifier demo', layout='wide')
     st.title('Spam classifier demo')
     st.markdown(
