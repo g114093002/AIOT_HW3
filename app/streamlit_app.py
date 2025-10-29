@@ -105,6 +105,12 @@ def bulk_classify(bundle, texts: List[str]) -> pd.DataFrame:
 def main():
     st.set_page_config(page_title='Spam classifier demo', layout='wide')
     st.title('Spam classifier demo')
+    st.markdown(
+        """
+        This demo shows a simple TF-IDF + Logistic Regression spam classifier.
+        Use the sample messages, type your own text, or upload a CSV to batch classify.
+        """
+    )
 
     left, right = st.columns([2, 1])
 
@@ -120,7 +126,14 @@ def main():
             st.success('Model loaded')
             if metrics:
                 st.subheader('Metrics')
-                st.write(metrics)
+                # show key metrics in a compact form
+                cols = st.columns(4)
+                cols[0].metric('Accuracy', f"{metrics.get('accuracy', 0):.3f}")
+                cols[1].metric('Precision', f"{metrics.get('precision', 0):.3f}")
+                cols[2].metric('Recall', f"{metrics.get('recall', 0):.3f}")
+                cols[3].metric('F1', f"{metrics.get('f1', 0):.3f}")
+                if metrics.get('roc_auc') is not None:
+                    st.write(f"ROC AUC: {metrics.get('roc_auc'):.3f}")
 
             # Top features
             if st.checkbox('Show top indicative features'):
@@ -138,15 +151,64 @@ def main():
     with left:
         st.header('Try a single message')
         sample = st.text_area('Message', value='Win a free iPhone by clicking here', height=120)
+        # example/sample messages picker
+        example_messages = [
+            'Win a free iPhone by clicking here',
+            'Your package has shipped. Track it here',
+            'Lowest price on meds, order now',
+            'Meeting at 3pm today, please confirm',
+            'Congratulations! You have been selected for a gift card',
+        ]
+        ex = st.selectbox('Or pick an example', ['(none)'] + example_messages)
+        if ex and ex != '(none)':
+            sample = ex
+            st.text_area('Message (example chosen)', value=sample, height=120)
         if st.button('Predict'):
             if bundle is None:
                 st.error('Model not available')
             else:
                 label, prob = predict_text(bundle, sample)
-                st.metric('Prediction', label.upper())
-                if prob is not None:
-                    st.progress(int(prob * 100))
-                    st.write(f'Probability spam: {prob:.3f}')
+                st.markdown('### Prediction')
+                pred_col1, pred_col2 = st.columns([1, 3])
+                with pred_col1:
+                    if label == 'spam':
+                        st.metric('Label', 'SPAM', delta=None)
+                    else:
+                        st.metric('Label', 'HAM', delta=None)
+                with pred_col2:
+                    if prob is not None:
+                        st.write(f'Probability spam: **{prob:.3f}**')
+                        # progress-like bar
+                        st.progress(int(prob * 100))
+                    else:
+                        st.write('Probability not available')
+
+                # If we have probabilities and metrics, show ROC curve preview
+                try:
+                    if metrics and bundle is not None:
+                        # compute ROC on sample of dataset (reuse dataset loader)
+                        df = load_dataset(DEFAULT_DATA_URL, nrows=1000)
+                        X = df['text'].values
+                        y = df['label'].apply(lambda s: 1 if s in ('spam', '1', 'true', 't', 'yes') else 0).values
+                        vec = bundle['vectorizer']
+                        clf = bundle['classifier']
+                        X_t = vec.transform(X)
+                        y_prob = clf.predict_proba(X_t)[:, 1] if hasattr(clf, 'predict_proba') else None
+                        if y_prob is not None:
+                            from sklearn.metrics import roc_curve, auc
+
+                            fpr, tpr, _ = roc_curve(y, y_prob)
+                            roc_auc = auc(fpr, tpr)
+                            st.write('ROC curve (sample)')
+                            import pandas as _pd
+
+                            roc_df = _pd.DataFrame({'fpr': fpr, 'tpr': tpr})
+                            roc_df = roc_df.set_index('fpr')
+                            st.line_chart(roc_df)
+                            st.write(f'Area under curve: {roc_auc:.3f}')
+                except Exception:
+                    # fail silently for ROC in demo
+                    pass
 
         st.markdown('---')
 
