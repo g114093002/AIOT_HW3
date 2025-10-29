@@ -124,6 +124,43 @@ def main():
     bundle = load_model(MODEL_PATH)
     metrics = load_metrics(METRICS_PATH)
 
+    # Sidebar: controls + quick stats
+    with st.sidebar:
+        st.title('Demo controls')
+        st.markdown('Use these controls to inspect model and dataset behaviour.')
+
+        st.subheader('Model')
+        if bundle is None:
+            st.error('No model found')
+        else:
+            st.success('Model loaded')
+            if metrics:
+                st.metric('Accuracy', f"{metrics.get('accuracy', 0):.3f}")
+                st.metric('F1', f"{metrics.get('f1', 0):.3f}")
+                st.metric('Recall', f"{metrics.get('recall', 0):.3f}")
+
+        st.markdown('---')
+        # Threshold in sidebar so it's always visible
+        threshold = st.slider('Classification threshold (spam prob)', 0.0, 1.0, 0.5, step=0.01)
+
+        st.markdown('---')
+        st.subheader('Dataset preview')
+        try:
+            df_small = load_dataset(DEFAULT_DATA_URL, nrows=2000)
+            counts = df_small['label'].value_counts()
+            st.write(f"Sample rows: {len(df_small)}")
+            st.write('Class distribution (sample)')
+            st.bar_chart(counts)
+            spam_ratio = counts.get('spam', 0) / counts.sum() if counts.sum() > 0 else 0
+            st.write(f"Sample spam ratio: {spam_ratio:.2%}")
+        except Exception:
+            st.write('Dataset preview not available')
+
+        st.markdown('---')
+        st.subheader('Quick links')
+        st.write('- Use the example messages or type your own')
+        st.write('- Adjust threshold to trade off precision/recall')
+
     with right:
         st.header('Model')
         if bundle is None:
@@ -169,9 +206,9 @@ def main():
         if ex and ex != '(none)':
             sample = ex
             st.text_area('Message (example chosen)', value=sample, height=120)
-        # Threshold slider: lets user adjust the probability cutoff used to label spam
-        threshold = st.slider('Classification threshold (probability for spam)', 0.0, 1.0, 0.5, step=0.01)
-        st.caption('Messages with probability >= threshold will be labeled as SPAM. Adjust to trade off precision vs recall.')
+    # Threshold caption moved to sidebar; keep caption here for context
+    with left:
+        st.caption('Messages with probability >= threshold (sidebar) will be labeled as SPAM. Adjust to trade off precision vs recall.')
 
         if st.button('Predict'):
             if bundle is None:
