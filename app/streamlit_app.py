@@ -366,8 +366,7 @@ def main():
                         X_t = vec.transform(X)
                         y_prob = clf.predict_proba(X_t)[:, 1] if hasattr(clf, 'predict_proba') else None
                         if y_prob is not None:
-                            from sklearn.metrics import roc_curve, auc
-
+                            # Use the already-imported roc_curve/auc from the module scope
                             fpr, tpr, _ = roc_curve(y, y_prob)
                             roc_auc = auc(fpr, tpr)
                             st.write('ROC curve (sample)')
